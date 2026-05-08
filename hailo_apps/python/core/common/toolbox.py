@@ -946,7 +946,7 @@ def resolve_arch(arch: Optional[str]) -> str:
     if arch:
         return arch
 
-    env_arch = os.getenv(HAILO_ARCH_KEY)
+    env_arch = os.getenv('HAILO_ARCH_KEY')
     if env_arch:
         return env_arch
 
