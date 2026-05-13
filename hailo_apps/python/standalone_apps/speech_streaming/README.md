@@ -58,6 +58,8 @@ ffmpeg -i lecture.mp3 -f s16le -ac 1 -ar 16000 - | \
 
 | Flag | Description |
 |---|---|
+| `--overlap SECONDS` | Overlap between consecutive chunks (default: 2.0, 0 to disable). Prevents word-boundary gibberish by ensuring every word appears fully in at least one chunk. |
+| `--normalize` | Peak-normalize each chunk to 0.9. Useful for quiet sources like microphones. Off by default — well-leveled sources (radio, files) don't need it. |
 | `--api` | Start SSE server for streaming results to HTTP clients |
 | `--port PORT` | SSE server port (default: 5001, requires `--api`) |
 | `--arch {hailo8,hailo8l,hailo10h}` | Target architecture (auto-detected if omitted) |

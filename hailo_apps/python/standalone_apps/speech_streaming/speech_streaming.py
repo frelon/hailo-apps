@@ -172,24 +172,31 @@ def _ensure_npy_assets(variant, npy_dir, app_name, arch, resources_root):
 # --- Stdin streaming ---
 
 
-def _read_stdin_chunks(chunk_bytes: int):
-    """Yield exactly chunk_bytes from stdin. Final partial chunk is zero-padded."""
+def _read_stdin_chunks(chunk_bytes: int, stride_bytes: int):
+    """Yield overlapping windows of chunk_bytes from stdin.
+
+    Advances by stride_bytes each iteration, keeping (chunk_bytes - stride_bytes)
+    bytes of overlap between consecutive windows. When stride_bytes == chunk_bytes
+    there is no overlap.
+    """
     buf = b""
     while True:
         needed = chunk_bytes - len(buf)
-        data = sys.stdin.buffer.read(needed)
-        if not data:
-            if buf:
-                buf += b"\0" * (chunk_bytes - len(buf))
-                yield buf
-            return
-        buf += data
+        if needed > 0:
+            data = sys.stdin.buffer.read(needed)
+            if not data:
+                if buf:
+                    buf += b"\0" * (chunk_bytes - len(buf))
+                    yield buf
+                return
+            buf += data
         if len(buf) >= chunk_bytes:
             yield buf[:chunk_bytes]
-            buf = buf[chunk_bytes:]
+            buf = buf[stride_bytes:]
 
 
-def _pcm_to_mel(pcm_bytes: bytes, chunk_length: int, pad_or_trim, log_mel_spectrogram):
+def _pcm_to_mel(pcm_bytes: bytes, chunk_length: int, pad_or_trim, log_mel_spectrogram,
+                normalize: bool = True):
     """Convert raw s16le PCM bytes to a mel spectrogram for the encoder.
 
     Returns None if the chunk is silence (below RMS threshold).
@@ -200,9 +207,10 @@ def _pcm_to_mel(pcm_bytes: bytes, chunk_length: int, pad_or_trim, log_mel_spectr
     if rms < 0.005:
         return None
 
-    peak = np.max(np.abs(audio))
-    if peak > 1e-6:
-        audio = audio * (0.9 / peak)
+    if normalize:
+        peak = np.max(np.abs(audio))
+        if peak > 1e-6:
+            audio = audio * (0.9 / peak)
 
     audio = pad_or_trim(audio, int(chunk_length * SAMPLE_RATE))
 
@@ -308,6 +316,15 @@ def get_args():
         help="List available models and exit",
     )
     parser.add_argument(
+        "--overlap", type=float, default=2.0, metavar="SECONDS",
+        help="Overlap between consecutive chunks in seconds (default: 2.0, 0 to disable)",
+    )
+    parser.add_argument(
+        "--normalize", action="store_true",
+        help="Peak-normalize each chunk to 0.9. Useful for quiet sources like "
+             "microphones; skip for well-leveled sources like radio or files.",
+    )
+    parser.add_argument(
         "--api", action="store_true",
         help="Start SSE server for streaming results to HTTP clients",
     )
@@ -380,7 +397,15 @@ def main():
     )
     chunk_length = pipeline.get_chunk_length()
     chunk_bytes = chunk_length * SAMPLE_RATE * 2
-    print(f"Ready (chunk length: {chunk_length}s, {chunk_bytes} bytes per chunk)", file=sys.stderr)
+
+    overlap_secs = max(0.0, min(args.overlap, chunk_length - 1.0))
+    stride_secs = chunk_length - overlap_secs
+    stride_bytes = int(stride_secs * SAMPLE_RATE) * 2
+    print(
+        f"Ready (chunk: {chunk_length}s, stride: {stride_secs:.1f}s, "
+        f"overlap: {overlap_secs:.1f}s, normalize: {args.normalize})",
+        file=sys.stderr,
+    )
 
     broadcast = None
     if args.api:
@@ -391,8 +416,11 @@ def main():
     print("Reading audio from stdin...", file=sys.stderr)
 
     try:
-        for pcm_chunk in _read_stdin_chunks(chunk_bytes):
-            mel = _pcm_to_mel(pcm_chunk, chunk_length, pad_or_trim, log_mel_spectrogram)
+        for pcm_chunk in _read_stdin_chunks(chunk_bytes, stride_bytes):
+            mel = _pcm_to_mel(
+                pcm_chunk, chunk_length, pad_or_trim, log_mel_spectrogram,
+                normalize=args.normalize,
+            )
             if mel is None:
                 continue
             pipeline.send_data(mel)
